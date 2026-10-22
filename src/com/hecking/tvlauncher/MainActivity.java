@@ -292,10 +292,9 @@ public class MainActivity extends Activity {
     /** The wobble on the tile being moved: a small rotation that swings back and forth. */
     private void startJiggle(View tile) {
         stopJiggle(); // every move step rebuilds the grid: never leave an old infinite animator running
-        ObjectAnimator a = ObjectAnimator.ofFloat(tile, View.ROTATION, -2.5f, 2.5f);
-        a.setDuration(140);
-        a.setRepeatCount(ObjectAnimator.INFINITE);
-        a.setRepeatMode(ObjectAnimator.REVERSE);
+        // one short tilt per step, not an endless wobble: an endless animation redraws the whole screen every frame
+        ObjectAnimator a = ObjectAnimator.ofFloat(tile, View.ROTATION, -2.5f, 0f);
+        a.setDuration(160);
         jiggle = a;
         a.start();
     }
