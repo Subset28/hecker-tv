@@ -67,7 +67,6 @@ import java.util.Set;
  * - Full-screen backdrop that crossfades every 30 seconds. No zoom: a continuous
  *   scale on the full-screen image was the main frame-time cost on the Sony.
  * - Live clock, date, and weather (Open-Meteo, no key).
- * - Trending row from the bundled TMDB list.
  * - Voice search button (Android speech input).
  * - Hidden apps are one list for the whole house (no profiles).
  * - Every Leanback-launchable app as a tile with its own banner; rebuilds on install/remove.
@@ -84,8 +83,6 @@ public class MainActivity extends Activity {
     private static final long HOLD_MS = 30000;
     private static final long FADE_MS = 900;
     private static final long WEATHER_MS = 20 * 60 * 1000;
-    private static final long HERO_MS = 8000;
-    private static final int HERO_DIM = 0xFFB0B0B5;
     private static final int ROW_INSET = 0;
     // app tiles: about five visible across the 1920px screen
     // four tiles across the 1920px screen, with gaps: (960dp - 48dp margins - 4*16dp gaps) / 4
@@ -95,7 +92,6 @@ public class MainActivity extends Activity {
     private static final int REQ_VOICE = 77;
     private static final String PREFS = "launcher";
     private static final String KEY_HIDDEN = "hidden";
-    private static final String KEY_TRENDING_ROW = "show_trending_row";
     // Plex "Continue watching" row: off by default, set in Customize. Server comes from /sdcard/tvhome/plex.json.
     private static final String KEY_PLEX_ON = "show_plex_row";
     private static final String PLEX_PKG = "com.plexapp.android";
@@ -130,9 +126,6 @@ public class MainActivity extends Activity {
     private final List<ResolveInfo> apps = new ArrayList<>();
     private final List<Group> groups = new ArrayList<>();
     private final List<String> backdrops = new ArrayList<>();
-    private final List<String> trendingFiles = new ArrayList<>();
-    private final List<String> trendingTitles = new ArrayList<>();
-    private final List<String> trendingDescs = new ArrayList<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     /** One Continue watching entry. art is filled by the Plex thread and read on the UI thread only. */
@@ -173,9 +166,6 @@ public class MainActivity extends Activity {
     private boolean customizing = false;
     private String subScreen = null;
 
-    // hero billboard: two artwork views crossfade, like the backdrop
-    private TextView heroTitle, heroDesc;
-    private int heroIndex = 0;
 
     private final Runnable nextBackdrop = new Runnable() {
         @Override
@@ -185,13 +175,6 @@ public class MainActivity extends Activity {
         }
     };
 
-    private final Runnable nextHero = new Runnable() {
-        @Override
-        public void run() {
-            showNextHero();
-            handler.postDelayed(this, HERO_MS);
-        }
-    };
 
     private final Runnable clockTick = new Runnable() {
         @Override
@@ -250,7 +233,6 @@ public class MainActivity extends Activity {
         if (!backdrops.isEmpty()) {
             showNextBackdrop();
         }
-        handler.removeCallbacks(nextHero);
         // static background and one featured title: no rotation timers
     }
 
@@ -266,7 +248,6 @@ public class MainActivity extends Activity {
         handler.removeCallbacks(clockTick);
         handler.removeCallbacks(weatherTick);
         handler.removeCallbacks(nextBackdrop);
-        handler.removeCallbacks(nextHero);
     }
 
     /**
@@ -310,12 +291,20 @@ public class MainActivity extends Activity {
 
     /** The wobble on the tile being moved: a small rotation that swings back and forth. */
     private void startJiggle(View tile) {
+        stopJiggle(); // every move step rebuilds the grid: never leave an old infinite animator running
         ObjectAnimator a = ObjectAnimator.ofFloat(tile, View.ROTATION, -2.5f, 2.5f);
         a.setDuration(140);
         a.setRepeatCount(ObjectAnimator.INFINITE);
         a.setRepeatMode(ObjectAnimator.REVERSE);
+        jiggle = a;
         a.start();
     }
+
+    private void stopJiggle() {
+        if (jiggle != null) { jiggle.cancel(); jiggle = null; }
+    }
+
+    private ObjectAnimator jiggle;
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -375,7 +364,7 @@ public class MainActivity extends Activity {
                 if (!p.trim().isEmpty() && !merged.contains(p.trim())) merged.add(p.trim());
             }
             prefs().edit().putString(KEY_ORDER, TextUtils.join(",", merged))
-                    .putBoolean("order_v2", true).commit();
+                    .putBoolean("order_v2", true).apply();
         }
         String savedRaw = prefs().getString(KEY_ORDER, "");
         if (savedRaw.isEmpty()) savedRaw = TextUtils.join(",", DEFAULT_ORDER);
@@ -406,7 +395,7 @@ public class MainActivity extends Activity {
             if (sb.length() > 0) sb.append(',');
             sb.append(p);
         }
-        prefs().edit().putString(KEY_ORDER, sb.toString()).commit();
+        prefs().edit().putString(KEY_ORDER, sb.toString()).apply(); // async disk write: no fsync on the UI thread per move step
     }
 
     /** Moves one app one place earlier (delta -1) or later (+1) in the global order. No-op at the ends. */
@@ -462,7 +451,7 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
             // names and package names are plain strings: this does not happen
         }
-        prefs().edit().putString(KEY_GROUPS, arr.toString()).commit();
+        prefs().edit().putString(KEY_GROUPS, arr.toString()).apply();
     }
 
     private int groupIndexOfPkg(String pkg) {
@@ -536,20 +525,39 @@ public class MainActivity extends Activity {
                     out.put(e.getKey(), v);
                 }
             }
-            java.io.File f = new java.io.File(SETTINGS_FILE);
-            f.getParentFile().mkdirs();
-            try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) {
-                o.write(out.toString().getBytes("UTF-8"));
+            byte[] data = out.toString().getBytes("UTF-8");
+            // the app's own folder always works; the shared copy only if All files access is on
+            for (String path : settingsPaths()) {
+                try {
+                    java.io.File f = new java.io.File(path);
+                    f.getParentFile().mkdirs();
+                    try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) {
+                        o.write(data);
+                    }
+                } catch (Exception ignored) {
+                    // this location is not writable: try the next one
+                }
             }
         } catch (Exception ignored) {
-            // no storage access: settings stay in preferences only
+            // nothing to save
         }
+    }
+
+    /** Own folder first, then the shared folder. */
+    private String[] settingsPaths() {
+        java.io.File own = getExternalFilesDir(null);
+        if (own == null) return new String[] { SETTINGS_FILE };
+        return new String[] { new java.io.File(own, "settings.json").getPath(), SETTINGS_FILE };
     }
 
     /** On a fresh install, bring back the saved settings. Keys already set are left alone. */
     private void restoreSettings() {
         if (prefs().getAll().size() > 0) return;
-        try (InputStream in = new java.io.FileInputStream(SETTINGS_FILE)) {
+        String source = SETTINGS_FILE;
+        for (String path : settingsPaths()) {
+            if (new java.io.File(path).exists()) { source = path; break; }
+        }
+        try (InputStream in = new java.io.FileInputStream(source)) {
             byte[] buf = new byte[65536];
             int n = in.read(buf);
             JSONObject saved = new JSONObject(new String(buf, 0, Math.max(0, n), "UTF-8"));
@@ -583,10 +591,6 @@ public class MainActivity extends Activity {
         return getSharedPreferences(PREFS, MODE_PRIVATE);
     }
 
-    /** The trending poster row is off by default; the featured hero stays on. Set in Customize. */
-    private boolean showTrendingRow() {
-        return prefs().getBoolean(KEY_TRENDING_ROW, false);
-    }
 
     // Apps hidden from the home grid. One list for the whole house: profiles were not useful here.
     // Hidden until you change it in Customize: apps this house doesn't use. Reversible; nothing is uninstalled.
@@ -775,11 +779,6 @@ public class MainActivity extends Activity {
                 JSONObject m = list.getJSONObject(i);
                 String file = m.getString("file");
                 backdrops.add(file);
-                if ("Trending".equals(m.optString("source"))) {
-                    trendingFiles.add(file);
-                    trendingTitles.add(m.getString("title"));
-                    trendingDescs.add(m.optString("desc", "Trending this week."));
-                }
             }
         } catch (Exception e) {
             // no artwork bundled: the background stays black
@@ -899,29 +898,37 @@ public class MainActivity extends Activity {
             paint.setStyle(Paint.Style.FILL);
         }
 
+        private Path gear; // built once per size (Path.op is expensive), not on every draw
+
         @Override
-        protected void onDraw(Canvas canvas) {
-            float cx = getWidth() / 2f, cy = getHeight() / 2f;
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            float cx = w / 2f, cy = h / 2f;
             float r = Math.min(cx, cy) * 0.82f;
             float outer = r, inner = r * 0.90f, hole = r * 0.36f;
             int teeth = 8;
             double step = 2 * Math.PI / teeth;
-            Path gear = new Path();
+            Path outline = new Path();
             for (int i = 0; i < teeth; i++) {
                 double a = i * step;
                 // one tooth: wide base on the ring, narrower tip outside it
                 // one continuous outline: only the very first point starts the path
-                point(gear, cx, cy, inner, a, i == 0);
-                point(gear, cx, cy, outer, a + step * 0.08, false);
-                point(gear, cx, cy, outer, a + step * 0.42, false);
-                point(gear, cx, cy, inner, a + step * 0.50, false);
+                point(outline, cx, cy, inner, a, i == 0);
+                point(outline, cx, cy, outer, a + step * 0.08, false);
+                point(outline, cx, cy, outer, a + step * 0.42, false);
+                point(outline, cx, cy, inner, a + step * 0.50, false);
             }
-            gear.close();
+            outline.close();
             // cut the centre hole out of the outline, so the background shows through it
             Path centre = new Path();
             centre.addCircle(cx, cy, hole, Path.Direction.CW);
-            gear.op(centre, Path.Op.DIFFERENCE);
-            canvas.drawPath(gear, paint);
+            outline.op(centre, Path.Op.DIFFERENCE);
+            gear = outline;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            if (gear != null) canvas.drawPath(gear, paint);
         }
 
         private static void point(Path p, float cx, float cy, float rad, double angle, boolean first) {
@@ -951,6 +958,7 @@ public class MainActivity extends Activity {
         if (!customizing) subScreen = null;
         artWaiting.clear();
         warmArt(); // no-op unless an app has no artwork cached yet
+        stopJiggle(); // the wobbling tile is about to be discarded
         contentHolder.removeAllViews();
         View view;
         if (!customizing) view = homeView();
@@ -989,18 +997,6 @@ public class MainActivity extends Activity {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
 
-        if (!trendingFiles.isEmpty()) {
-            if (showTrendingRow()) {
-                TextView head = new TextView(this);
-                head.setText("Trending");
-                head.setTextColor(TEXT);
-                head.setTextSize(22);
-                head.setPadding(0, dp(12), 0, dp(6));
-                body.addView(head);
-                body.addView(trendingRow());
-            }
-        }
-
         // Continue watching: only when On, configured, and the last fetch returned items
         if (plexOn() && !plexItems.isEmpty()) {
             body.addView(sectionHead("Continue watching"));
@@ -1036,7 +1032,7 @@ public class MainActivity extends Activity {
         TextView appsHead = sectionHead("Apps");
         appsHead.setPadding(0, dp(112), 0, dp(6));
         body.addView(appsHead);
-        body.addView(appRowView(loose, true));
+        body.addView(appRowView(loose, false)); // Customize lives behind the gear icon only
         scroll.addView(body);
         return scroll;
     }
@@ -1113,54 +1109,6 @@ public class MainActivity extends Activity {
         return grid;
     }
 
-    private View trendingRow() {
-        HorizontalScrollView row = new HorizontalScrollView(this);
-        row.setHorizontalScrollBarEnabled(false);
-        row.setClipToPadding(false);
-        row.setClipChildren(false);
-        // inset the first poster so it sits clear of the left edge fade when nothing has scrolled
-        row.setPadding(dp(ROW_INSET), 0, dp(12), 0);
-        LinearLayout items = new LinearLayout(this);
-        items.setOrientation(LinearLayout.HORIZONTAL);
-        for (int i = 0; i < trendingFiles.size(); i++) {
-            LinearLayout tile = new LinearLayout(this);
-            tile.setOrientation(LinearLayout.VERTICAL);
-            tile.setFocusable(true);
-            tile.setClickable(true);
-            tile.setPadding(0, 0, dp(12), dp(4));
-            ImageView poster = new ImageView(this);
-            poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            poster.setBackground(card(TILE, 0, 12));
-            clipRound(poster, 12);
-            loadThumb(trendingFiles.get(i), poster);
-            View shadow = new View(this);
-            tile.addView(shadowStack(shadow, poster, 260, 146));
-            TextView title = new TextView(this);
-            title.setText(trendingTitles.get(i));
-            title.setTextColor(0xFFB0B0B5);
-            title.setTextSize(15);
-            title.setMaxWidth(dp(260));
-            title.setPadding(0, dp(4), 0, 0);
-            tile.addView(title);
-            final String t = trendingTitles.get(i);
-            tile.setOnClickListener(v -> Toast.makeText(this, t, Toast.LENGTH_SHORT).show());
-            tile.setOnFocusChangeListener((v, f) -> {
-                tile.animate().scaleX(f ? 1.08f : 1f).scaleY(f ? 1.08f : 1f).setDuration(220).start();
-                poster.setForeground(ring(f, 12));
-                shadow.setBackground(f ? shadowBg() : null);
-            });
-            items.addView(tile);
-        }
-        row.addView(items);
-
-        // dark fades at both ends, so posters scrolling under the edge fade out instead of being cut
-        FrameLayout wrap = new FrameLayout(this);
-        wrap.addView(row, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT));
-        wrap.addView(edgeFade(true));
-        wrap.addView(edgeFade(false));
-        return wrap;
-    }
 
     private View edgeFade(boolean leftEdge) {
         View fade = new View(this);
@@ -1202,79 +1150,10 @@ public class MainActivity extends Activity {
         return d;
     }
 
-    // ---------- hero billboard ----------
 
-    private int heroHeight() {
-        return (int) (getResources().getDisplayMetrics().heightPixels * 0.22f);
-    }
 
-    private View heroView() {
-        int heroH = heroHeight();
 
-        LinearLayout hero = new LinearLayout(this);
-        hero.setOrientation(LinearLayout.HORIZONTAL);
-        hero.setGravity(Gravity.CENTER_VERTICAL);
-        // the hero takes the initial focus so the page opens at the top; focusing a poster
-        // instead would scroll the hero off screen. Down moves into the trending row.
-        hero.setFocusable(true);
 
-        LinearLayout text = new LinearLayout(this);
-        text.setOrientation(LinearLayout.VERTICAL);
-        text.setGravity(Gravity.CENTER_VERTICAL);
-        TextView label = new TextView(this);
-        label.setText("Featured");
-        label.setTextColor(HERO_DIM);
-        label.setTextSize(18);
-        label.setPadding(0, dp(8), 0, 0);
-        heroTitle = new TextView(this);
-        heroTitle.setTextColor(TEXT);
-        heroTitle.setTextSize(40);
-        heroTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        heroTitle.setMaxLines(2);
-        heroTitle.setEllipsize(TextUtils.TruncateAt.END);
-        heroTitle.setPadding(0, dp(4), 0, dp(6));
-        heroDesc = new TextView(this);
-        heroDesc.setTextColor(HERO_DIM);
-        heroDesc.setTextSize(20);
-        heroDesc.setMaxLines(1);
-        heroDesc.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(label);
-        text.addView(heroTitle);
-        text.addView(heroDesc);
-        hero.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        // no boxed artwork: the featured title's image is the full-screen backdrop (see showHero)
-        showHero(heroIndex);
-        return hero;
-    }
-
-    private void showNextHero() {
-        if (customizing || heroTitle == null || trendingFiles.isEmpty()) return;
-        showHero((heroIndex + 1) % trendingFiles.size());
-    }
-
-    private void showHero(final int idx) {
-        final String file = trendingFiles.get(idx);
-        new Thread(() -> {
-            Bitmap bmp = null;
-            try (InputStream in = getAssets().open(file)) {
-                BitmapFactory.Options o = new BitmapFactory.Options();
-                o.inSampleSize = 2;
-                bmp = BitmapFactory.decodeStream(in, null, o);
-            } catch (Exception ignored) {
-                // keep the current backdrop
-            }
-            final Bitmap decoded = bmp;
-            handler.post(() -> {
-                // the home view may have been rebuilt while decoding: drop the stale result
-                if (decoded == null || heroTitle == null) return;
-                heroIndex = idx;
-                heroTitle.setText(trendingTitles.get(idx));
-                heroDesc.setText(trendingDescs.get(idx));
-                // the hero changes text only; the background is the fixed home image
-            });
-        }, "hero-decode").start();
-    }
 
     private void loadThumb(String file, ImageView target) {
         new Thread(() -> {
@@ -1303,14 +1182,21 @@ public class MainActivity extends Activity {
      */
     private static final String PLEX_CONFIG = "/sdcard/tvhome/plex.json";
 
+    /** The app's own folder first (no storage permission needed), then the shared folder. */
     private JSONObject plexConfig() {
-        try (InputStream in = new java.io.FileInputStream(PLEX_CONFIG)) {
-            byte[] buf = new byte[4096];
-            int n = in.read(buf);
-            return new JSONObject(new String(buf, 0, Math.max(0, n), "UTF-8"));
-        } catch (Exception e) {
-            return null; // no file, or unreadable: Plex row stays hidden
+        java.io.File own = getExternalFilesDir(null);
+        String[] paths = own == null ? new String[] { PLEX_CONFIG }
+                : new String[] { new java.io.File(own, "plex.json").getPath(), PLEX_CONFIG };
+        for (String path : paths) {
+            try (InputStream in = new java.io.FileInputStream(path)) {
+                byte[] buf = new byte[4096];
+                int n = in.read(buf);
+                return new JSONObject(new String(buf, 0, Math.max(0, n), "UTF-8"));
+            } catch (Exception e) {
+                // try the next location
+            }
         }
+        return null; // no file anywhere: Plex row stays hidden
     }
 
     private String plexBase() {
@@ -1326,7 +1212,11 @@ public class MainActivity extends Activity {
     }
 
     private boolean plexConfigured() {
-        return !plexBase().isEmpty() && !plexToken().isEmpty();
+        JSONObject c = plexConfig(); // one file read, not one per field
+        if (c == null) return false;
+        String u = c.optString("url", "").trim();
+        while (u.endsWith("/")) u = u.substring(0, u.length() - 1); // same rule as plexBase()
+        return !u.isEmpty() && !c.optString("token", "").trim().isEmpty();
     }
 
     private String plexRowTitle(boolean on) {
@@ -1366,6 +1256,7 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception e) {
                 found.clear(); // no server, timeout or bad JSON: show nothing (no token in messages)
+                android.util.Log.w("TVHome", "plex load failed: " + e.getClass().getSimpleName());
             }
             handler.post(() -> {
                 if (gen != plexGen) return; // a newer load or a Customize toggle superseded this one
@@ -1520,15 +1411,23 @@ public class MainActivity extends Activity {
     private ScrollView newList(LinearLayout list) {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackground(new ColorDrawable(0xE6101012));
+        // solid, not see-through: the home screen behind must not show through the text
+        scroll.setBackground(new ColorDrawable(0xFF0C0C10));
         list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(72), dp(48), dp(72), dp(48));
+        list.setPadding(dp(96), dp(64), dp(96), dp(64));
         TextView heading = new TextView(this);
         heading.setText("Settings");
         heading.setTextColor(TEXT);
-        heading.setTextSize(40);
-        heading.setPadding(0, 0, 0, dp(24));
+        heading.setTextSize(44);
+        heading.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        heading.setPadding(0, 0, 0, dp(8));
         list.addView(heading);
+        TextView sub = new TextView(this);
+        sub.setText("Hecker TV");
+        sub.setTextColor(DIM);
+        sub.setTextSize(18);
+        sub.setPadding(0, 0, 0, dp(32));
+        list.addView(sub);
         scroll.addView(list);
         return scroll;
     }
@@ -1567,10 +1466,6 @@ public class MainActivity extends Activity {
             list.addView(rowLabel("Remove apps", "Uninstall an app you installed",
                     () -> { subScreen = SUB_REMOVE; showCurrentView(); }));
         }
-        boolean trendingOn = showTrendingRow();
-        list.addView(rowLabel("Trending row: " + (trendingOn ? "On" : "Off"),
-                "The row of trending posters under the featured title",
-                () -> { prefs().edit().putBoolean(KEY_TRENDING_ROW, !trendingOn).apply(); showCurrentView(); }));
         final boolean plexIsOn = plexOn();
         final String plexNext = plexRowTitle(!plexIsOn);
         list.addView(rowLabel(plexRowTitle(plexIsOn), "Continue watching from your Plex server",
@@ -1677,32 +1572,38 @@ public class MainActivity extends Activity {
         row.setFocusable(true);
         row.setClickable(true);
         row.setTag(title); // lets a rebuild find this row again (see focusKey)
-        row.setPadding(dp(24), dp(16), dp(24), dp(16));
+        row.setPadding(dp(28), dp(20), dp(28), dp(20));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 0, 0, dp(8));
+        lp.setMargins(0, 0, 0, dp(12));
         row.setLayoutParams(lp);
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextColor(TEXT);
-        t.setTextSize(24);
+        t.setTextSize(26);
+        t.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         row.addView(t);
         if (subtitle != null) {
             TextView s = new TextView(this);
             s.setText(subtitle);
             s.setTextColor(DIM);
-            s.setTextSize(16);
-            s.setPadding(0, dp(4), 0, 0);
+            s.setTextSize(17);
+            s.setPadding(0, dp(6), 0, 0);
             row.addView(s);
         }
         row.setOnClickListener(v -> action.run());
-        // focused row: a rounded highlight; unfocused: nothing, so the list stays calm
+        // every row is a card; the focused one gets a lighter card and an edge so the cursor is obvious
         row.setOnFocusChangeListener((v, focused) -> {
             GradientDrawable bg = new GradientDrawable();
-            bg.setCornerRadius(dp(16));
-            bg.setColor(focused ? 0x33FFFFFF : 0x00000000);
+            bg.setCornerRadius(dp(18));
+            bg.setColor(focused ? 0xFF2A2A34 : 0xFF17171E);
+            if (focused) bg.setStroke(dp(2), 0xFFFFFFFF);
             row.setBackground(bg);
         });
+        GradientDrawable idle = new GradientDrawable();
+        idle.setCornerRadius(dp(18));
+        idle.setColor(0xFF17171E);
+        row.setBackground(idle);
         return row;
     }
 
