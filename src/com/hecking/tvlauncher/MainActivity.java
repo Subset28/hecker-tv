@@ -1358,6 +1358,13 @@ public class MainActivity extends Activity {
                 plexItems.clear();
                 plexItems.addAll(found);
                 plexRowCache = null; // items changed: rebuild the row once
+                // at boot the network may not be up yet: retry a few times, 20 s apart
+                if (found.isEmpty() && plexOn() && plexRetries < 10) {
+                    plexRetries++;
+                    handler.postDelayed(() -> loadPlex(), 20000);
+                } else if (!found.isEmpty()) {
+                    plexRetries = 0;
+                }
                 if (!customizing) {
                     View f = getCurrentFocus();
                     if (f != null && f.getTag() instanceof String) focusKey = (String) f.getTag();
@@ -1438,6 +1445,7 @@ public class MainActivity extends Activity {
     /** Continue watching: a horizontal row of APP_W x APP_H cards with the title under each, like the app tiles. */
     /** The Plex row is rebuilt only when its items change, not on every grid rebuild (move-mode steps). */
     private View plexRowCache;
+    private int plexRetries = 0; // Plex fetch retries after a failed load (boot before the network is up)
 
     private View cachedPlexRow() {
         if (plexRowCache == null) plexRowCache = plexRowView();
