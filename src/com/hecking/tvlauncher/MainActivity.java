@@ -556,8 +556,66 @@ public class MainActivity extends Activity {
                     // this location is not writable: try the next one
                 }
             }
+            try {
+                msWrite(data); // Downloads/tvhome: kept when the app is uninstalled
+            } catch (Exception ignored) {
+                // MediaStore not available: the other copies still hold the settings
+            }
         } catch (Exception ignored) {
             // nothing to save
+        }
+    }
+
+    // Downloads/tvhome/tvhome-settings.json through MediaStore: survives uninstall, needs no shared-storage group (Android 10+)
+    private static final String MS_NAME = "tvhome-settings.json";
+    private static final String MS_DIR = "Download/tvhome/";
+
+    private android.net.Uri msFind() {
+        android.database.Cursor c = getContentResolver().query(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                new String[] { android.provider.MediaStore.Downloads._ID },
+                android.provider.MediaStore.Downloads.DISPLAY_NAME + "=? AND "
+                        + android.provider.MediaStore.Downloads.RELATIVE_PATH + "=?",
+                new String[] { MS_NAME, MS_DIR }, null);
+        try {
+            if (c != null && c.moveToFirst()) {
+                return android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0));
+            }
+        } finally {
+            if (c != null) c.close();
+        }
+        return null;
+    }
+
+    private void msWrite(byte[] data) throws Exception {
+        if (android.os.Build.VERSION.SDK_INT < 29) return;
+        android.content.ContentResolver r = getContentResolver();
+        android.net.Uri u = msFind();
+        if (u == null) {
+            android.content.ContentValues v = new android.content.ContentValues();
+            v.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, MS_NAME);
+            v.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, MS_DIR);
+            u = r.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+        }
+        if (u == null) return;
+        try (java.io.OutputStream o = r.openOutputStream(u, "wt")) {
+            if (o != null) o.write(data);
+        }
+    }
+
+    private String msRead() {
+        if (android.os.Build.VERSION.SDK_INT < 29) return null;
+        android.net.Uri u = msFind();
+        if (u == null) return null;
+        try (InputStream in = getContentResolver().openInputStream(u)) {
+            if (in == null) return null;
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            return bo.toString("UTF-8");
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -574,14 +632,21 @@ public class MainActivity extends Activity {
     /** force: re-read even when settings exist (used when storage is granted after the first start). */
     private void restoreSettings(boolean force) {
         if (!force && prefs().getAll().size() > 0) return;
-        String source = SETTINGS_FILE;
+        String text = null;
         for (String path : settingsPaths()) {
-            if (new java.io.File(path).exists()) { source = path; break; }
+            try (InputStream in = new java.io.FileInputStream(path)) {
+                byte[] buf = new byte[65536];
+                int n = in.read(buf);
+                text = new String(buf, 0, Math.max(0, n), "UTF-8");
+                break;
+            } catch (Exception e) {
+                // not there: try the next copy
+            }
         }
-        try (InputStream in = new java.io.FileInputStream(source)) {
-            byte[] buf = new byte[65536];
-            int n = in.read(buf);
-            JSONObject saved = new JSONObject(new String(buf, 0, Math.max(0, n), "UTF-8"));
+        if (text == null) text = msRead(); // then Downloads/tvhome
+        if (text == null) return;
+        try {
+            JSONObject saved = new JSONObject(text);
             SharedPreferences.Editor ed = prefs().edit();
             java.util.Iterator<String> keys = saved.keys();
             while (keys.hasNext()) {
@@ -1021,7 +1086,7 @@ public class MainActivity extends Activity {
         // Continue watching: only when On, configured, and the last fetch returned items
         if (plexOn() && !plexItems.isEmpty()) {
             body.addView(sectionHead("Continue watching"));
-            body.addView(plexRowView());
+            body.addView(cachedPlexRow());
         }
 
         Set<String> hidden = hiddenSet();
@@ -1255,6 +1320,7 @@ public class MainActivity extends Activity {
         final int gen = ++plexGen;
         if (!plexOn() || !plexConfigured()) {
             plexItems.clear();
+            plexRowCache = null;
             return;
         }
         final String base = plexBase();
@@ -1291,6 +1357,7 @@ public class MainActivity extends Activity {
                 if (gen != plexGen) return; // a newer load or a Customize toggle superseded this one
                 plexItems.clear();
                 plexItems.addAll(found);
+                plexRowCache = null; // items changed: rebuild the row once
                 if (!customizing) {
                     View f = getCurrentFocus();
                     if (f != null && f.getTag() instanceof String) focusKey = (String) f.getTag();
@@ -1369,6 +1436,16 @@ public class MainActivity extends Activity {
     }
 
     /** Continue watching: a horizontal row of APP_W x APP_H cards with the title under each, like the app tiles. */
+    /** The Plex row is rebuilt only when its items change, not on every grid rebuild (move-mode steps). */
+    private View plexRowCache;
+
+    private View cachedPlexRow() {
+        if (plexRowCache == null) plexRowCache = plexRowView();
+        ViewGroup parent = (ViewGroup) plexRowCache.getParent();
+        if (parent != null) parent.removeView(plexRowCache);
+        return plexRowCache;
+    }
+
     private View plexRowView() {
         HorizontalScrollView row = new HorizontalScrollView(this);
         row.setHorizontalScrollBarEnabled(false);

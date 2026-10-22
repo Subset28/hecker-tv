@@ -4,8 +4,8 @@
     android:versionCode="1"
     android:versionName="0.1">
 
-    <!-- target 28: on this Android 10 TV, classic storage rules give the app its shared-storage group -->
-    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
+    <!-- target 34: Play Protect blocks installs that target old Android versions -->
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- normal-level: lets ACTION_DELETE show Android's own uninstall dialog (the user still confirms) -->
