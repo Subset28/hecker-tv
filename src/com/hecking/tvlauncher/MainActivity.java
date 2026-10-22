@@ -1030,7 +1030,9 @@ public class MainActivity extends Activity {
         // the Apps section sits low, so the second row is cut by the bottom edge: the peek that says
         // "there is more below"
         TextView appsHead = sectionHead("Apps");
-        appsHead.setPadding(0, dp(112), 0, dp(6));
+        // with the Continue watching row above, the Apps grid moves up so its first row stays on screen
+        boolean plexRowShown = plexOn() && !plexItems.isEmpty();
+        appsHead.setPadding(0, dp(plexRowShown ? 28 : 112), 0, dp(6));
         body.addView(appsHead);
         body.addView(appRowView(loose, false)); // Customize lives behind the gear icon only
         scroll.addView(body);
