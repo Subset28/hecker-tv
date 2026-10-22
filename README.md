@@ -41,4 +41,4 @@ Adjust the paths if your layout differs. Output: `build\tvhome.apk`.
 
 - The home background image is from Unsplash. Other artwork is not included, so add your own in `assets\`
   and list it in `assets\backdrops.json`.
-- No license yet.
+- Licensed under the MIT License (see `LICENSE`).
