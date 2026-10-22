@@ -1239,9 +1239,14 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             final List<PlexItem> found = new ArrayList<>();
             try {
-                byte[] body = fetch(base + "/hubs/continueWatching?X-Plex-Token=" + enc(token), true);
-                JSONObject container = new JSONObject(new String(body, "UTF-8")).getJSONObject("MediaContainer");
-                JSONArray meta = container.optJSONArray("Metadata");
+                // Continue watching first; when nothing is in progress, fall back to On Deck
+                JSONArray meta = null;
+                for (String ep : new String[] { "/hubs/continueWatching", "/library/onDeck" }) {
+                    byte[] body = fetch(base + ep + "?X-Plex-Token=" + enc(token), true);
+                    JSONObject container = new JSONObject(new String(body, "UTF-8")).getJSONObject("MediaContainer");
+                    meta = container.optJSONArray("Metadata");
+                    if (meta != null && meta.length() > 0) break;
+                }
                 if (meta != null) {
                     for (int i = 0; i < meta.length() && found.size() < PLEX_MAX_ITEMS; i++) {
                         JSONObject m = meta.getJSONObject(i);
