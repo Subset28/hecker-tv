@@ -1258,6 +1258,7 @@ public class MainActivity extends Activity {
                         String thumb = m.isNull("thumb") ? "" : m.optString("thumb", "");
                         PlexItem item = new PlexItem(title, show, thumb);
                         if (thumb.startsWith("/library/")) item.art = plexThumb(base, token, thumb);
+                        if (item.art == null) continue; // a tile without artwork looks broken: leave it out
                         found.add(item);
                     }
                 }
@@ -1285,7 +1286,7 @@ public class MainActivity extends Activity {
         try {
             byte[] bytes = fetch(base + thumb + "?X-Plex-Token=" + enc(token), false);
             BitmapFactory.Options o = new BitmapFactory.Options();
-            o.inSampleSize = 2;
+            o.inSampleSize = 4; // tiles are ~280 px wide: a quarter-size bitmap re-uploads far faster on every grid rebuild
             Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
             if (bmp != null) plexArtCache.put(thumb, bmp);
             return bmp;
