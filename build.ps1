@@ -29,7 +29,7 @@ if (Test-Path $res) {
   if ($LASTEXITCODE) { throw 'aapt2 compile failed' }
   $resArgs = @((Join-Path $build 'res.zip'))
 }
-& (Join-Path $bt 'aapt2.exe') link -o (Join-Path $build 'base.apk') --manifest (Join-Path $root 'AndroidManifest.xml') -I $jar --min-sdk-version 28 --target-sdk-version 34 @assetArgs @resArgs
+& (Join-Path $bt 'aapt2.exe') link -o (Join-Path $build 'base.apk') --manifest (Join-Path $root 'AndroidManifest.xml') -I $jar --min-sdk-version 28 --target-sdk-version 28 @assetArgs @resArgs
 if ($LASTEXITCODE) { throw 'aapt2 link failed' }
 
 # 2. java -> class files

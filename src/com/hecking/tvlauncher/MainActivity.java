@@ -205,11 +205,30 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Android 10 (this TV): ask once for storage so settings and the Plex config can live in /sdcard/tvhome
+        if (android.os.Build.VERSION.SDK_INT >= 23 && android.os.Build.VERSION.SDK_INT < 30
+                && checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE }, 1);
+        }
         restoreSettings();
         loadBackdropList();
         loadApps();
         buildShell();
         showCurrentView();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1) {
+            // the first start ran before storage was granted: bring the saved layout back now
+            restoreSettings(true);
+            loadPlex();
+            showCurrentView();
+        }
     }
 
     @Override
@@ -550,8 +569,11 @@ public class MainActivity extends Activity {
     }
 
     /** On a fresh install, bring back the saved settings. Keys already set are left alone. */
-    private void restoreSettings() {
-        if (prefs().getAll().size() > 0) return;
+    private void restoreSettings() { restoreSettings(false); }
+
+    /** force: re-read even when settings exist (used when storage is granted after the first start). */
+    private void restoreSettings(boolean force) {
+        if (!force && prefs().getAll().size() > 0) return;
         String source = SETTINGS_FILE;
         for (String path : settingsPaths()) {
             if (new java.io.File(path).exists()) { source = path; break; }
