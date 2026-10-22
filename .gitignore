@@ -1,0 +1,7 @@
+build/
+*.keystore
+keystore-password.txt
+keys.txt
+plex.json
+settings.json
+*.apk
